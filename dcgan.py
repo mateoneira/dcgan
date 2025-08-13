@@ -59,7 +59,7 @@ class Linear(nn.Module):
 
 class ReLU(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
-        return t.maximum(x, t.tensor(0.0))
+        return x.clamp_min_(0)
     
 class Sequential(nn.Module):
     _modules: dict[str, nn.Module]
@@ -299,8 +299,29 @@ class BatchNorm2d(nn.Module):
 
 
 class Tanh(nn.Module):
-    def forward(self, x: Tensor) -> Tensor:
-        return (t.exp(x) - t.exp(-x))/(t.exp(x)+t.exp(-x))
+    def __init__(self, safe_upcast: bool = True):
+        super().__init__()
+        self.safe_upcast = safe_upcast
+
+    def forward(self, x: t.Tensor) -> t.Tensor:
+        dtype = x.dtype
+        if self.safe_upcast and dtype in (t.float16, t.bfloat16):
+            x = x.float()
+
+        out = t.empty_like(x)
+        pos = x >= 0
+        neg = ~pos
+
+        # Stable piecewise forms using exp(±2x)
+        # For x >= 0: tanh(x) = (1 - e^{-2x}) / (1 + e^{-2x})
+        e = t.exp(-2 * x[pos])
+        out[pos] = (1 - e) / (1 + e)
+
+        # For x < 0:  tanh(x) = (e^{2x} - 1) / (e^{2x} + 1)
+        e = t.exp(2 * x[neg])
+        out[neg] = (e - 1) / (e + 1)
+
+        return out.to(dtype)
 
 
 class LeakyReLU(nn.Module):
@@ -319,8 +340,28 @@ class LeakyReLU(nn.Module):
 
 
 class Sigmoid(nn.Module):
-    def forward(self, x: Tensor) -> Tensor:
-        return 1 / (1 + t.exp(-x))
+    def __init__(self, safe_upcast: bool = True):
+        super().__init__()
+        self.safe_upcast = safe_upcast
+
+    def forward(self, x: t.Tensor) -> t.Tensor:
+        dtype = x.dtype
+        if self.safe_upcast and dtype in (t.float16, t.bfloat16):
+            x = x.float()
+
+        out = t.empty_like(x)
+        pos = x >= 0
+        neg = ~pos
+
+        # to avoid overflows
+        ex = t.exp(-x[pos])
+        out[pos] = 1 / (1 + ex)
+        
+        ex = t.exp(x[neg])
+        out[neg] = ex / (1 + ex)
+
+        # Cast back if we upcasted
+        return out.to(dtype)
     
 def initialize_weights(model: nn.Module) -> None:
     """
